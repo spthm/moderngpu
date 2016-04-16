@@ -34,7 +34,7 @@
 
 #pragma once
 
-#include "static.h"
+#include "util/static.h"
 #include <vector>
 #include <cstdio>
 #include <algorithm>

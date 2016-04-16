@@ -36,7 +36,7 @@
  *
  ******************************************************************************/
 
-#include "singleton.h"
+#include "util/singleton.h"
 #include "util/format.h"
 #include <cstring>
 

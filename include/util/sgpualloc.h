@@ -46,9 +46,6 @@ namespace sgpu {
 
 class CudaDevice;
 
-class CudaContext;
-typedef intrusive_ptr<CudaContext> ContextPtr;
-
 ////////////////////////////////////////////////////////////////////////////////
 // Customizable allocator.
 
