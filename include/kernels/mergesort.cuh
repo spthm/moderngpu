@@ -41,7 +41,7 @@ namespace sgpu {
 
 template<typename Tuning, bool HasValues, typename KeyIt1, typename KeyIt2,
 	typename ValIt1, typename ValIt2, typename Comp>
-SGPU_LAUNCH_BOUNDS void KernelBlocksort(KeyIt1 keysSource_global,
+SGPU_LAUNCH_BOUNDS void KernelBlocksort(int numTiles, KeyIt1 keysSource_global,
 	ValIt1 valsSource_global, int count, KeyIt2 keysDest_global,
 	ValIt2 valsDest_global, Comp comp) {
 
@@ -59,51 +59,55 @@ SGPU_LAUNCH_BOUNDS void KernelBlocksort(KeyIt1 keysSource_global,
 	__shared__ Shared shared;
 
 	int tid = threadIdx.x;
-	int block = blockIdx.x;
-	int gid = NV * block;
-	int count2 = min(NV, count - gid);
 
-	// Load the values into thread order.
-	ValType threadValues[VT];
-	if(HasValues) {
-		DeviceGlobalToShared<NT, VT>(count2, valsSource_global + gid, tid,
-			shared.values);
-		DeviceSharedToThread<VT>(shared.values, tid, threadValues);
-	}
+	for(int block = blockIdx.x; block < numTiles; block += gridDim.x) {
+		__syncthreads();
 
-	// Load keys into shared memory and transpose into register in thread order.
-	KeyType threadKeys[VT];
-	DeviceGlobalToShared<NT, VT>(count2, keysSource_global + gid, tid,
-		shared.keys);
-	DeviceSharedToThread<VT>(shared.keys, tid, threadKeys);
+		int gid = NV * block;
+		int count2 = min(NV, count - gid);
 
-	// If we're in the last tile, set the uninitialized keys for the thread with
-	// a partial number of keys.
-	int first = VT * tid;
-	if(first + VT > count2 && first < count2) {
-		KeyType maxKey = threadKeys[0];
-		#pragma unroll
-		for(int i = 1; i < VT; ++i)
-			if(first + i < count2)
-				maxKey = comp(maxKey, threadKeys[i]) ? threadKeys[i] : maxKey;
+		// Load the values into thread order.
+		ValType threadValues[VT];
+		if(HasValues) {
+			DeviceGlobalToShared<NT, VT>(count2, valsSource_global + gid, tid,
+				shared.values);
+			DeviceSharedToThread<VT>(shared.values, tid, threadValues);
+		}
 
-		// Fill in the uninitialized elements with max key.
-		#pragma unroll
-		for(int i = 0; i < VT; ++i)
-			if(first + i >= count2) threadKeys[i] = maxKey;
-	}
+		// Load keys into shared memory and transpose into register in thread order.
+		KeyType threadKeys[VT];
+		DeviceGlobalToShared<NT, VT>(count2, keysSource_global + gid, tid,
+			shared.keys);
+		DeviceSharedToThread<VT>(shared.keys, tid, threadKeys);
 
-	CTAMergesort<NT, VT, true, HasValues>(threadKeys, threadValues, shared.keys,
-		shared.values, count2, tid, comp);
+		// If we're in the last tile, set the uninitialized keys for the thread with
+		// a partial number of keys.
+		int first = VT * tid;
+		if(first + VT > count2 && first < count2) {
+			KeyType maxKey = threadKeys[0];
+			#pragma unroll
+			for(int i = 1; i < VT; ++i)
+				if(first + i < count2)
+					maxKey = comp(maxKey, threadKeys[i]) ? threadKeys[i] : maxKey;
 
-	// Store the sorted keys to global.
-	DeviceSharedToGlobal<NT, VT>(count2, shared.keys, tid,
-		keysDest_global + gid);
+			// Fill in the uninitialized elements with max key.
+			#pragma unroll
+			for(int i = 0; i < VT; ++i)
+				if(first + i >= count2) threadKeys[i] = maxKey;
+		}
 
-	if(HasValues) {
-		DeviceThreadToShared<VT>(threadValues, tid, shared.values);
-		DeviceSharedToGlobal<NT, VT>(count2, shared.values, tid,
-			valsDest_global + gid);
+		CTAMergesort<NT, VT, true, HasValues>(threadKeys, threadValues, shared.keys,
+			shared.values, count2, tid, comp);
+
+		// Store the sorted keys to global.
+		DeviceSharedToGlobal<NT, VT>(count2, shared.keys, tid,
+			keysDest_global + gid);
+
+		if(HasValues) {
+			DeviceThreadToShared<VT>(threadValues, tid, shared.values);
+			DeviceSharedToGlobal<NT, VT>(count2, shared.values, tid,
+				valsDest_global + gid);
+		}
 	}
 }
 
@@ -122,16 +126,19 @@ SGPU_HOST void MergesortKeys(T* data_global, int count, Comp comp,
 	int2 launch = Tuning::GetLaunchParams(context);
 
 	const int NV = launch.x * launch.y;
-	int numBlocks = SGPU_DIV_UP(count, NV);
-	int numPasses = FindLog2(numBlocks, true);
+	int numTiles = SGPU_DIV_UP(count, NV);
+	int numPasses = FindLog2(numTiles, true);
+
+	int maxBlocks = context.MaxGridSize();
+	int numBlocks = min(numTiles, maxBlocks);
 
 	SGPU_MEM(T) destDevice = context.Malloc<T>(count);
 	T* source = data_global;
 	T* dest = destDevice->get();
 
 	KernelBlocksort<Tuning, false>
-		<<<numBlocks, launch.x, 0, context.Stream()>>>(source, (const int*)0,
-		count, (1 & numPasses) ? dest : source, (int*)0, comp);
+		<<<numBlocks, launch.x, 0, context.Stream()>>>(numTiles, source,
+		(const int*)0, count, (1 & numPasses) ? dest : source, (int*)0, comp);
 	SGPU_SYNC_CHECK("KernelBlocksort");
 
 	if(1 & numPasses) std::swap(source, dest);
@@ -142,7 +149,7 @@ SGPU_HOST void MergesortKeys(T* data_global, int count, Comp comp,
 			source, count, source, 0, NV, coop, comp, context);
 
 		KernelMerge<Tuning, false, false>
-			<<<numBlocks, launch.x, 0, context.Stream()>>>(source,
+			<<<numBlocks, launch.x, 0, context.Stream()>>>(numTiles, source,
 			(const int*)0, count, source, (const int*)0, 0,
 			partitionsDevice->get(), coop, dest, (int*)0, comp);
 		SGPU_SYNC_CHECK("KernelMerge");
@@ -170,8 +177,11 @@ SGPU_HOST void MergesortPairs(KeyType* keys_global, ValType* values_global,
 	int2 launch = Tuning::GetLaunchParams(context);
 
 	const int NV = launch.x * launch.y;
-	int numBlocks = SGPU_DIV_UP(count, NV);
-	int numPasses = FindLog2(numBlocks, true);
+	int numTiles = SGPU_DIV_UP(count, NV);
+	int numPasses = FindLog2(numTiles, true);
+
+	int maxBlocks = context.MaxGridSize();
+	int numBlocks = min(numTiles, maxBlocks);
 
 	SGPU_MEM(KeyType) keysDestDevice = context.Malloc<KeyType>(count);
 	SGPU_MEM(ValType) valsDestDevice = context.Malloc<ValType>(count);
@@ -181,7 +191,8 @@ SGPU_HOST void MergesortPairs(KeyType* keys_global, ValType* values_global,
 	ValType* valsDest = valsDestDevice->get();
 
 	KernelBlocksort<Tuning, true><<<numBlocks, launch.x, 0, context.Stream()>>>(
-		keysSource, valsSource, count, (1 & numPasses) ? keysDest : keysSource,
+		numTiles, keysSource, valsSource, count,
+		(1 & numPasses) ? keysDest : keysSource,
 		(1 & numPasses) ? valsDest : valsSource, comp);
 	SGPU_SYNC_CHECK("KernelBlocksort");
 
@@ -196,7 +207,7 @@ SGPU_HOST void MergesortPairs(KeyType* keys_global, ValType* values_global,
 			keysSource, count, keysSource, 0, NV, coop, comp, context);
 
 		KernelMerge<Tuning, true, false>
-			<<<numBlocks, launch.x, 0, context.Stream()>>>(keysSource,
+			<<<numBlocks, launch.x, 0, context.Stream()>>>(numTiles, keysSource,
 			valsSource, count, keysSource, valsSource, 0,
 			partitionsDevice->get(), coop, keysDest, valsDest, comp);
 		SGPU_SYNC_CHECK("KernelMerge");
@@ -222,8 +233,11 @@ SGPU_HOST void MergesortIndices(KeyType* keys_global, int* values_global,
 	int2 launch = Tuning::GetLaunchParams(context);
 
 	const int NV = launch.x * launch.y;
-	int numBlocks = SGPU_DIV_UP(count, NV);
-	int numPasses = FindLog2(numBlocks, true);
+	int numTiles = SGPU_DIV_UP(count, NV);
+	int numPasses = FindLog2(numTiles, true);
+
+	int maxBlocks = context.MaxGridSize();
+	int numBlocks = min(numTiles, maxBlocks);
 
 	SGPU_MEM(KeyType) keysDestDevice = context.Malloc<KeyType>(count);
 	SGPU_MEM(int) valsDestDevice = context.Malloc<int>(count);
@@ -233,7 +247,7 @@ SGPU_HOST void MergesortIndices(KeyType* keys_global, int* values_global,
 	int* valsDest = valsDestDevice->get();
 
 	KernelBlocksort<Tuning, true><<<numBlocks, launch.x, 0, context.Stream()>>>(
-		keysSource, sgpu::counting_iterator<int>(0), count,
+		numTiles, keysSource, sgpu::counting_iterator<int>(0), count,
 		(1 & numPasses) ? keysDest : keysSource,
 		(1 & numPasses) ? valsDest : valsSource, comp);
 	SGPU_SYNC_CHECK("KernelBlocksort");
@@ -249,7 +263,7 @@ SGPU_HOST void MergesortIndices(KeyType* keys_global, int* values_global,
 			keysSource, count, keysSource, 0, NV, coop, comp, context);
 
 		KernelMerge<Tuning, true, false>
-			<<<numBlocks, launch.x, 0, context.Stream()>>>(keysSource,
+			<<<numBlocks, launch.x, 0, context.Stream()>>>(numTiles, keysSource,
 			valsSource, count, keysSource, valsSource, 0,
 			partitionsDevice->get(), coop, keysDest, valsDest, comp);
 		SGPU_SYNC_CHECK("KernelMerge");

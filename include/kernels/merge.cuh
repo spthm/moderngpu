@@ -46,10 +46,10 @@ namespace sgpu {
 template<typename Tuning, bool HasValues, bool LoadExtended, typename KeysIt1,
 	typename KeysIt2, typename KeysIt3, typename ValsIt1, typename ValsIt2,
 	typename ValsIt3, typename Comp>
-SGPU_LAUNCH_BOUNDS void KernelMerge(KeysIt1 aKeys_global, ValsIt1 aVals_global,
-	int aCount, KeysIt2 bKeys_global, ValsIt2 bVals_global, int bCount,
-	const int* mp_global, int coop, KeysIt3 keys_global, ValsIt3 vals_global,
-	Comp comp) {
+SGPU_LAUNCH_BOUNDS void KernelMerge(int numTiles, KeysIt1 aKeys_global,
+	ValsIt1 aVals_global, int aCount, KeysIt2 bKeys_global,
+	ValsIt2 bVals_global, int bCount, const int* mp_global, int coop,
+	KeysIt3 keys_global, ValsIt3 vals_global, Comp comp) {
 
 	typedef SGPU_LAUNCH_PARAMS Params;
 	typedef typename std::iterator_traits<KeysIt1>::value_type KeyType;
@@ -65,14 +65,17 @@ SGPU_LAUNCH_BOUNDS void KernelMerge(KeysIt1 aKeys_global, ValsIt1 aVals_global,
 	__shared__ Shared shared;
 
 	int tid = threadIdx.x;
-	int block = blockIdx.x;
 
-	int4 range = ComputeMergeRange(aCount, bCount, block, coop, NT * VT,
-		mp_global);
+	for(int block = blockIdx.x; block < numTiles; block += gridDim.x) {
+		__syncthreads();
 
-	DeviceMerge<NT, VT, HasValues, LoadExtended>(aKeys_global, aVals_global,
-		aCount, bKeys_global, bVals_global, bCount, tid, block, range,
-		shared.keys, shared.indices, keys_global, vals_global, comp);
+		int4 range = ComputeMergeRange(aCount, bCount, block, coop, NT * VT,
+			mp_global);
+
+		DeviceMerge<NT, VT, HasValues, LoadExtended>(aKeys_global, aVals_global,
+			aCount, bKeys_global, bVals_global, bCount, tid, block, range,
+			shared.keys, shared.indices, keys_global, vals_global, comp);
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -94,9 +97,11 @@ SGPU_HOST void MergeKeys(KeysIt1 aKeys_global, int aCount, KeysIt2 bKeys_global,
 	SGPU_MEM(int) partitionsDevice = MergePathPartitions<SgpuBoundsLower>(
 		aKeys_global, aCount, bKeys_global, bCount, NV, 0, comp, context);
 
-	int numBlocks = SGPU_DIV_UP(aCount + bCount, NV);
+	int numTiles = SGPU_DIV_UP(aCount + bCount, NV);
+	int maxBlocks = context.MaxGridSize();
+	int numBlocks = min(numTiles, maxBlocks);
 	KernelMerge<Tuning, false, true>
-		<<<numBlocks, launch.x, 0, context.Stream()>>>(aKeys_global,
+		<<<numBlocks, launch.x, 0, context.Stream()>>>(numTiles, aKeys_global,
 		(const int*)0, aCount, bKeys_global, (const int*)0, bCount,
 		partitionsDevice->get(), 0, keys_global, (int*)0, comp);
 	SGPU_SYNC_CHECK("KernelMerge");
@@ -131,9 +136,11 @@ SGPU_HOST void MergePairs(KeysIt1 aKeys_global, ValsIt1 aVals_global,
 	SGPU_MEM(int) partitionsDevice = MergePathPartitions<SgpuBoundsLower>(
 		aKeys_global, aCount, bKeys_global, bCount, NV, 0, comp, context);
 
-	int numBlocks = SGPU_DIV_UP(aCount + bCount, NV);
+	int numTiles = SGPU_DIV_UP(aCount + bCount, NV);
+	int maxBlocks = context.MaxGridSize();
+	int numBlocks = min(numTiles, maxBlocks);
 	KernelMerge<Tuning, true, false>
-		<<<numBlocks, launch.x, 0, context.Stream()>>>(aKeys_global,
+		<<<numBlocks, launch.x, 0, context.Stream()>>>(numTiles, aKeys_global,
 		aVals_global, aCount, bKeys_global, bVals_global, bCount,
 		partitionsDevice->get(), 0, keys_global, vals_global, comp);
 	SGPU_SYNC_CHECK("KernelMerge");
