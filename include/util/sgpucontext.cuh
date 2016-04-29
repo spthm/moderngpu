@@ -1,9 +1,48 @@
+/******************************************************************************
+ * Copyright (c) 2013, NVIDIA CORPORATION; 2016, Sam Thomson.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the NVIDIA CORPORATION nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ ******************************************************************************/
+
+/******************************************************************************
+ *
+ * Original code and text by Sean Baxter, NVIDIA Research
+ * Modified code and text by Sam Thomson.
+ * Segmented GPU is a derivative of Modern GPU.
+ * See http://nvlabs.github.io/moderngpu for original repository and
+ * documentation.
+ *
+ ******************************************************************************/
+
 #pragma once
 
-#include "util/util.h"
 #include "util/format.h"
-#include "sgpualloc.h"
+#include "util/util.h"
+#include "util/sgpualloc.h"
 #include <cuda.h>
+#include <cuda_runtime_api.h>
 
 namespace sgpu {
 
@@ -74,19 +113,11 @@ public:
 
 class CudaEvent : public noncopyable {
 public:
-	CudaEvent() {
-		cudaEventCreate(&_event);
-	}
-	explicit CudaEvent(int flags) {
-		cudaEventCreateWithFlags(&_event, flags);
-	}
-	~CudaEvent() {
-		cudaEventDestroy(_event);
-	}
-	operator cudaEvent_t() { return _event; }
-	void Swap(CudaEvent& rhs) {
-		std::swap(_event, rhs._event);
-	}
+	CudaEvent();
+	explicit CudaEvent(int flags);
+	~CudaEvent();
+	operator cudaEvent_t();
+	void Swap(CudaEvent& rhs);
 private:
 	cudaEvent_t _event;
 };
@@ -102,10 +133,10 @@ public:
 
 ////////////////////////////////////////////////////////////////////////////////
 
-struct DeviceGroup;
+struct DeviceCache;
 
 class CudaDevice : public noncopyable {
-	friend struct DeviceGroup;
+	friend struct DeviceCache;
 public:
 	static int DeviceCount();
 	static CudaDevice& ByOrdinal(int ordinal);
@@ -122,17 +153,7 @@ public:
 
 	int MaxGridSize() const { return _prop.maxGridSize[0]; }
 	template<typename T>
-	int MaxActiveBlocks(T kernel, int blockSize, size_t dynamicSMemSize = 0) const {
-		int maxBlocksPerSM;
-#if CUDA_VERSION < 6050
-		maxBlocksPerSM = 1;
-#else
-		cudaOccupancyMaxActiveBlocksPerMultiprocessor(&maxBlocksPerSM, kernel,
-			blockSize, dynamicSMemSize);
-#endif
-
-		return maxBlocksPerSM * NumSMs();
-	}
+	int MaxActiveBlocks(T kernel, int blockSize, size_t dynamicSMemSize = 0) const;
 
 	std::string DeviceString() const;
 
@@ -254,28 +275,29 @@ typedef sgpu::intrusive_ptr<CudaContext> ContextPtr;
 
 // Create a context on the default stream (0).
 ContextPtr CreateCudaDevice(int ordinal);
-ContextPtr CreateCudaDevice(int argc, char** argv, bool printInfo = false);
+ContextPtr CreateCudaDeviceFromArgv(int argc, char** argv,
+	bool printInfo = false);
 
 // Create a context on a new stream.
 ContextPtr CreateCudaDeviceStream(int ordinal);
-ContextPtr CreateCudaDeviceStream(int argc, char** argv,
+ContextPtr CreateCudaDeviceStreamFromArgv(int argc, char** argv,
 	bool printInfo = false);
 
 // Create a context and attach to an existing stream.
 ContextPtr CreateCudaDeviceAttachStream(cudaStream_t stream);
 ContextPtr CreateCudaDeviceAttachStream(int ordinal, cudaStream_t stream);
 
-struct ContextGroup;
+struct ContextCache;
 
 class CudaContext : public CudaMemSupport {
-	friend struct ContextGroup;
+	friend struct ContextCache;
 
 	friend ContextPtr CreateCudaDevice(int ordinal);
 	friend ContextPtr CreateCudaDeviceStream(int ordinal);
 	friend ContextPtr CreateCudaDeviceAttachStream(int ordinal,
 		cudaStream_t stream);
 public:
-	static CudaContext& StandardContext(int ordinal = -1);
+	static CudaContext& CachedContext(int ordinal = -1);
 
 	// 4KB of page-locked memory per context.
 	int* PageLocked() { return _pageLocked; }
@@ -316,10 +338,8 @@ public:
 		if(!_noRefCount) CudaMemSupport::Release();
 	}
 private:
-	CudaContext(CudaDevice& device, bool newStream, bool standard);
+	CudaContext(CudaDevice& device, bool newStream);
 	~CudaContext();
-
-	AllocPtr CreateDefaultAlloc(CudaDevice& device);
 
 	bool _ownStream;
 	cudaStream_t _stream;
@@ -329,173 +349,6 @@ private:
 	bool _noRefCount;
 	int* _pageLocked;
 };
-
-////////////////////////////////////////////////////////////////////////////////
-// CudaDeviceMem method implementations
-
-template<typename T>
-cudaError_t CudaDeviceMem<T>::ToDevice(T* data, size_t count) const {
-	return ToDevice(0, sizeof(T) * count, data);
-}
-template<typename T>
-cudaError_t CudaDeviceMem<T>::ToDevice(size_t srcOffset, size_t bytes,
-	void* data) const {
-	cudaError_t error = cudaMemcpy(data, (char*)_p + srcOffset, bytes,
-		cudaMemcpyDeviceToDevice);
-	if(cudaSuccess != error) {
-		printf("CudaDeviceMem::ToDevice copy error %d\n", error);
-		exit(0);
-	}
-	return error;
-}
-
-template<typename T>
-cudaError_t CudaDeviceMem<T>::ToHost(T* data, size_t count) const {
-	return ToHost(0, sizeof(T) * count, data);
-}
-template<typename T>
-cudaError_t CudaDeviceMem<T>::ToHost(std::vector<T>& data, size_t count) const {
-	data.resize(count);
-	cudaError_t error = cudaSuccess;
-	if(_size) error = ToHost(&data[0], count);
-	return error;
-}
-template<typename T>
-cudaError_t CudaDeviceMem<T>::ToHost(std::vector<T>& data) const {
-	return ToHost(data, _size);
-}
-template<typename T>
-cudaError_t CudaDeviceMem<T>::ToHost(size_t srcOffset, size_t bytes,
-	void* data) const {
-
-	cudaError_t error = cudaMemcpy(data, (char*)_p + srcOffset, bytes,
-		cudaMemcpyDeviceToHost);
-	if(cudaSuccess != error) {
-		printf("CudaDeviceMem::ToHost copy error %d\n", error);
-		exit(0);
-	}
-	return error;
-}
-
-template<typename T>
-cudaError_t CudaDeviceMem<T>::FromDevice(const T* data, size_t count) {
-	return FromDevice(0, sizeof(T) * count, data);
-}
-template<typename T>
-cudaError_t CudaDeviceMem<T>::FromDevice(size_t dstOffset, size_t bytes,
-	const void* data) {
-	if(dstOffset + bytes > sizeof(T) * _size)
-		return cudaErrorInvalidValue;
-	cudaMemcpy(_p + dstOffset, data, bytes, cudaMemcpyDeviceToDevice);
-	return cudaSuccess;
-}
-template<typename T>
-cudaError_t CudaDeviceMem<T>::FromHost(const std::vector<T>& data,
-	size_t count) {
-	cudaError_t error = cudaSuccess;
-	if(data.size()) error = FromHost(&data[0], count);
-	return error;
-}
-template<typename T>
-cudaError_t CudaDeviceMem<T>::FromHost(const std::vector<T>& data) {
-	return FromHost(data, data.size());
-}
-template<typename T>
-cudaError_t CudaDeviceMem<T>::FromHost(const T* data, size_t count) {
-	return FromHost(0, sizeof(T) * count, data);
-}
-template<typename T>
-cudaError_t CudaDeviceMem<T>::FromHost(size_t dstOffset, size_t bytes,
-	const void* data) {
-	if(dstOffset + bytes > sizeof(T) * _size)
-		return cudaErrorInvalidValue;
-	cudaMemcpy(_p + dstOffset, data, bytes, cudaMemcpyHostToDevice);
-	return cudaSuccess;
-}
-template<typename T>
-CudaDeviceMem<T>::~CudaDeviceMem() {
-	_alloc->Free(_p);
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// CudaMemSupport method implementations
-
-template<typename T>
-SGPU_MEM(T) CudaMemSupport::Malloc(size_t count) {
-	SGPU_MEM(T) mem(new CudaDeviceMem<T>(_alloc.get()));
-	mem->_size = count;
-	cudaError_t error = _alloc->Malloc(sizeof(T) * count, (void**)&mem->_p);
-	if(cudaSuccess != error) {
-		printf("cudaMalloc error %d\n", error);
-		exit(0);
-		throw CudaException(cudaErrorMemoryAllocation);
-	}
-#ifdef DEBUG
-	// Initialize the memory to -1 in debug mode.
-//	cudaMemset(mem->get(), -1, count);
-#endif
-
-	return mem;
-}
-
-template<typename T>
-SGPU_MEM(T) CudaMemSupport::Malloc(const T* data, size_t count) {
-	SGPU_MEM(T) mem = Malloc<T>(count);
-	mem->FromHost(data, count);
-	return mem;
-}
-
-template<typename T>
-SGPU_MEM(T) CudaMemSupport::Malloc(const std::vector<T>& data) {
-	SGPU_MEM(T) mem = Malloc<T>(data.size());
-	if(data.size()) mem->FromHost(&data[0], data.size());
-	return mem;
-}
-
-template<typename T>
-SGPU_MEM(T) CudaMemSupport::Fill(size_t count, T fill) {
-	std::vector<T> data(count, fill);
-	return Malloc(data);
-}
-
-template<typename T>
-SGPU_MEM(T) CudaMemSupport::FillAscending(size_t count, T first, T step) {
-	std::vector<T> data(count);
-	for(size_t i = 0; i < count; ++i)
-		data[i] = first + i * step;
-	return Malloc(data);
-}
-
-template<typename T>
-SGPU_MEM(T) CudaMemSupport::GenRandom(size_t count, T min, T max) {
-	std::vector<T> data(count);
-	for(size_t i = 0; i < count; ++i)
-		data[i] = Rand(min, max);
-	return Malloc(data);
-}
-
-template<typename T>
-SGPU_MEM(T) CudaMemSupport::SortRandom(size_t count, T min, T max) {
-	std::vector<T> data(count);
-	for(size_t i = 0; i < count; ++i)
-		data[i] = Rand(min, max);
-	std::sort(data.begin(), data.end());
-	return Malloc(data);
-}
-
-template<typename T, typename Func>
-SGPU_MEM(T) CudaMemSupport::GenFunc(size_t count, Func f) {
-	std::vector<T> data(count);
-	for(size_t i = 0; i < count; ++i)
-		data[i] = f(i);
-
-	SGPU_MEM(T) mem = Malloc<T>(count);
-	mem->FromHost(data, count);
-	return mem;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// Format methods that operate directly on device mem.
 
 template<typename T, typename Op>
 std::string FormatArrayOp(const CudaDeviceMem<T>& mem, int count, Op op,
@@ -521,6 +374,7 @@ template<typename T>
 void PrintArray(const CudaDeviceMem<T>& mem, const char* format, int numCols) {
 	PrintArray(mem, mem.Size(), format, numCols);
 }
+
 template<typename T, typename Op>
 void PrintArrayOp(const CudaDeviceMem<T>& mem, Op op, int numCols) {
 	std::string s = FormatArrayOp(mem, op, numCols);
@@ -528,7 +382,7 @@ void PrintArrayOp(const CudaDeviceMem<T>& mem, Op op, int numCols) {
 }
 
 
-////////////////////////////////////////////////////////////////////////////////
-
 
 } // namespace sgpu
+
+#include "sgpucontext.inl"

@@ -34,7 +34,7 @@
 
 #pragma once
 
-#include "static.h"
+#include "util/static.h"
 #include <vector>
 #include <cstdio>
 #include <algorithm>
@@ -108,6 +108,11 @@ std::string FormatArrayOp(const T* data, size_t count, Op op, int numCols) {
 	return s;
 }
 
+template<typename T, typename Op>
+std::string FormatArrayOp(const std::vector<T>& data, Op op, int numCols) {
+	return FormatArrayOp(&data[0], (int)data.size(), op, numCols);
+}
+
 template<typename T>
 std::string FormatArray(const T* data, size_t count, const char* format,
 	int numCols) {
@@ -119,10 +124,7 @@ std::string FormatArray(const std::vector<T>& data, const char* format,
 	int numCols) {
 	return FormatArray(&data[0], (int)data.size(), format, numCols);
 }
-template<typename T, typename Op>
-std::string FormatArrayOp(const std::vector<T>& data, Op op, int numCols) {
-	return FormatArrayOp(&data[0], (int)data.size(), op, numCols);
-}
+
 
 template<typename T>
 void PrintArray(const T* data, size_t count, const char* format, int numCols) {
@@ -141,8 +143,5 @@ void PrintArrayOp(const std::vector<T>& data, Op op, int numCols) {
 	std::string s = FormatArrayOp(data, op, numCols);
 	printf("%s", s.c_str());
 }
-
-
-
 
 } // namespace sgpu

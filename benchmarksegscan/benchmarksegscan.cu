@@ -217,7 +217,7 @@ void BenchmarkSegScan2(TestType testType, bool supportEmpty,
 }
 
 int main(int argc, char** argv) {
-    ContextPtr context = CreateCudaDevice(argc, argv, true);
+    ContextPtr context = CreateCudaDeviceFromArgv(argc, argv, true);
 
     bool supportEmpty = false;
     TestType testType = TestTypeNormal;

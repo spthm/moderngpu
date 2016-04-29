@@ -174,7 +174,7 @@ const int Tests[][3] = {
 const int NumTests = sizeof(Tests) / sizeof(Tests[0]);
 
 int main(int argc, char** argv) {
-	ContextPtr context = CreateCudaDevice(argc, argv, true);
+	ContextPtr context = CreateCudaDeviceFromArgv(argc, argv, true);
 
 	typedef int T1;
 	typedef int64 T2;
