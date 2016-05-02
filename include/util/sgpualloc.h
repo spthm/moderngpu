@@ -38,7 +38,7 @@
 
 #pragma once
 
-#include "util/util.h"
+#include "../util/util.h"
 #include <cuda.h>
 #include <cuda_runtime_api.h>
 

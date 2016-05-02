@@ -36,8 +36,8 @@
  *
  ******************************************************************************/
 
-#include "util/singleton.h"
-#include "util/format.h"
+#include "../util/singleton.h"
+#include "../util/format.h"
 #include <cstring>
 
 namespace sgpu {

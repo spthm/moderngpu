@@ -38,9 +38,9 @@
 
 #pragma once
 
-#include "util/format.h"
-#include "util/util.h"
-#include "util/sgpualloc.h"
+#include "../util/format.h"
+#include "../util/util.h"
+#include "../util/sgpualloc.h"
 #include <cuda.h>
 #include <cuda_runtime_api.h>
 

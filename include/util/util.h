@@ -34,7 +34,7 @@
 
 #pragma once
 
-#include "util/static.h"
+#include "../util/static.h"
 
 namespace sgpu {
 
