@@ -3,7 +3,7 @@ segmentedgpu
 
 Segmented parallel primitives for GPUs.
 
-segmentedgpu is a stripped-down version of [moderngpu v1.0](http://nvlabs.github.io/moderngpu) by Sean Baxter. The main differences are as follows:
+segmentedgpu is a stripped-down version of [moderngpu v1.0](https://github.com/moderngpu/moderngpu/wiki/moderngpu-1.0) by Sean Baxter. The main differences are as follows:
 
 * Only reductions, scans, sorts and their segmented variants are present (along with any dependencies they may have).
 * segmentedgpu does not require separate compilation of a context class; it may be used as a header-only library. However, `CudaContext` is now only accessible from `.cu` files, and so segmentedgpu may only be used in `.cu` files.
