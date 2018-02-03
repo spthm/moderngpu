@@ -1,4 +1,4 @@
-Copyright (c) 2013, NVIDIA CORPORATION; 2016, Sam Thomson.
+Copyright (c) 2013, NVIDIA CORPORATION; 2016 - 2018, Sam Thomson.
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
